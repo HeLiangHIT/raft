@@ -14,7 +14,6 @@
 
 // TODO: leader doesn't timeout and cause election
 
-
 static int __raft_persist_term(
     raft_server_t* raft,
     void *udata,
@@ -63,6 +62,9 @@ raft_cbs_t generic_funcs = {
     .persist_term = __raft_persist_term,
     .persist_vote = __raft_persist_vote,
 };
+
+// TODO: don't apply logs while snapshotting
+// TODO: don't cause elections while snapshotting
 
 void TestRaft_server_voted_for_records_who_we_voted_for(CuTest * tc)
 {
@@ -1270,6 +1272,7 @@ void TestRaft_follower_recv_appendentries_delete_entries_if_conflict_with_new_en
     ae.entries = &mety;
     ae.n_entries = 1;
 
+    /* str4 has overwritten the last 2 entries */
     raft_recv_appendentries(r, raft_get_node(r, 2), &ae, &aer);
     CuAssertTrue(tc, 1 == aer.success);
     CuAssertTrue(tc, 2 == raft_get_log_count(r));
@@ -3543,4 +3546,162 @@ void TestRaft_leader_recv_requestvote_responds_with_granting_if_term_is_higher(C
     rv.term = 2;
     raft_recv_requestvote(r, raft_get_node(r, 3), &rv, &rvr);
     CuAssertTrue(tc, 1 == raft_is_follower(r));
+}
+
+void TestRaft_leader_will_not_apply_entry_if_snapshot_is_in_progress(CuTest * tc)
+{
+    raft_cbs_t funcs = {
+        .send_appendentries = __raft_send_appendentries,
+    };
+
+    void *r = raft_new();
+    raft_set_callbacks(r, &funcs, NULL);
+
+    msg_entry_response_t cr;
+
+    raft_add_node(r, NULL, 1, 1);
+    raft_add_node(r, NULL, 2, 0);
+
+    /* I am the leader */
+    raft_set_state(r, RAFT_STATE_LEADER);
+    CuAssertTrue(tc, 0 == raft_get_log_count(r));
+
+    /* entry message */
+    msg_entry_t ety = {};
+    ety.id = 1;
+    ety.data.buf = "entry";
+    ety.data.len = strlen("entry");
+
+    /* receive entry */
+    raft_recv_entry(r, &ety, &cr);
+    CuAssertTrue(tc, 1 == raft_get_log_count(r));
+
+    raft_begin_snapshot(r);
+
+    raft_apply_entry(r);
+    CuAssertTrue(tc, 0 == raft_get_last_applied_idx(r));
+}
+
+void TestRaft_leader_snapshot_end_fails_if_snapshot_not_in_progress(CuTest * tc)
+{
+    raft_cbs_t funcs = {
+        .send_appendentries = __raft_send_appendentries,
+    };
+
+    void *r = raft_new();
+    raft_set_callbacks(r, &funcs, NULL);
+
+    raft_add_node(r, NULL, 1, 1);
+    raft_add_node(r, NULL, 2, 0);
+
+    /* I am the leader */
+    raft_set_state(r, RAFT_STATE_LEADER);
+    CuAssertTrue(tc, 0 == raft_get_log_count(r));
+    CuAssertTrue(tc, -1 == raft_end_snapshot(r, 10));
+}
+
+void TestRaft_leader_snapshot_end_fails_if_log_not_compacted(CuTest * tc)
+{
+    raft_cbs_t funcs = {
+        .send_appendentries = __raft_send_appendentries,
+    };
+
+    void *r = raft_new();
+    raft_set_callbacks(r, &funcs, NULL);
+
+    msg_entry_response_t cr;
+
+    raft_add_node(r, NULL, 1, 1);
+    raft_add_node(r, NULL, 2, 0);
+
+    /* I am the leader */
+    raft_set_state(r, RAFT_STATE_LEADER);
+    CuAssertTrue(tc, 0 == raft_get_log_count(r));
+
+    /* entry message */
+    msg_entry_t ety = {};
+    ety.id = 1;
+    ety.data.buf = "entry";
+    ety.data.len = strlen("entry");
+
+    /* receive entry */
+    raft_recv_entry(r, &ety, &cr);
+    CuAssertTrue(tc, 1 == raft_get_log_count(r));
+
+    raft_begin_snapshot(r);
+    CuAssertTrue(tc, -1 == raft_end_snapshot(r, 10));
+}
+
+void TestRaft_leader_snapshot_end_succeeds_if_log_compacted(CuTest * tc)
+{
+    raft_cbs_t funcs = {
+        .persist_term = __raft_persist_term,
+        .send_appendentries = __raft_send_appendentries,
+    };
+
+    void *r = raft_new();
+    raft_set_callbacks(r, &funcs, NULL);
+
+    msg_entry_response_t cr;
+
+    raft_add_node(r, NULL, 1, 1);
+    raft_add_node(r, NULL, 2, 0);
+
+    /* I am the leader */
+    raft_set_state(r, RAFT_STATE_LEADER);
+    raft_set_current_term(r, 1);
+    CuAssertTrue(tc, 0 == raft_get_log_count(r));
+
+    /* entry message */
+    msg_entry_t ety = {};
+    ety.id = 1;
+    ety.data.buf = "entry";
+    ety.data.len = strlen("entry");
+
+    /* receive entry */
+    raft_recv_entry(r, &ety, &cr);
+    raft_set_commit_idx(r, 1);
+    CuAssertTrue(tc, 1 == raft_get_log_count(r));
+
+    raft_begin_snapshot(r);
+
+    int i = raft_get_first_entry_idx(r);
+    for (; i < raft_get_commit_idx(r); i++)
+        raft_poll_entry(r, i);
+
+    CuAssertTrue(tc, 0 == raft_end_snapshot(r, 10));
+}
+
+void TxestRaft_joinee_needs_to_get_snapshot(CuTest * tc)
+{
+    raft_cbs_t funcs = {
+        .send_appendentries = __raft_send_appendentries,
+    };
+
+    void *r = raft_new();
+    raft_set_callbacks(r, &funcs, NULL);
+
+    msg_entry_response_t cr;
+
+    raft_add_node(r, NULL, 1, 1);
+    raft_add_node(r, NULL, 2, 0);
+
+    /* I am the leader */
+    raft_set_state(r, RAFT_STATE_LEADER);
+    CuAssertTrue(tc, 0 == raft_get_log_count(r));
+
+    /* entry message */
+    msg_entry_t ety = {};
+    ety.id = 1;
+    ety.data.buf = "entry";
+    ety.data.len = strlen("entry");
+
+    /* receive entry */
+    raft_recv_entry(r, &ety, &cr);
+    CuAssertTrue(tc, 1 == raft_get_log_count(r));
+
+    raft_begin_snapshot(r);
+
+    raft_apply_entry(r);
+    CuAssertTrue(tc, 0 == raft_get_last_applied_idx(r));
 }

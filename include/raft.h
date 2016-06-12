@@ -26,11 +26,41 @@ typedef enum {
 } raft_state_e;
 
 typedef enum {
+    /** 
+     * Regular log type.
+     * This is solely for application data intended for the FSM.
+     */
     RAFT_LOGTYPE_NORMAL,
+    /**
+     * Membership change.
+     * Non-voting nodes can't cast votes or start elections.
+     * Nodes in this non-voting state are used to catch up with the cluster, 
+     * when trying to the join the cluster.
+     */
     RAFT_LOGTYPE_ADD_NONVOTING_NODE,
+    /**
+     * Membership change.
+     * Add a voting node.
+     */
     RAFT_LOGTYPE_ADD_NODE,
+    /**
+     * Membership change.
+     * Nodes become demoted when we want to remove them from the cluster.
+     * Demoted nodes can't take part in voting or start elections. 
+     */
     RAFT_LOGTYPE_DEMOTE_NODE,
+    /**
+     * Membership change.
+     * The node is removed from the cluster.
+     * This happens after the node has been demoted.
+     * Removing nodes is a 2 step process: first demote, then remove.
+     */
     RAFT_LOGTYPE_REMOVE_NODE,
+    // RAFT_LOGTYPE_SNAPSHOT,
+    /**
+     * Users can piggyback the entry mechanism by specifying log types that
+     * are higher than RAFT_LOGTYPE_NUM.
+     */
     RAFT_LOGTYPE_NUM,
 } raft_logtype_e;
 
@@ -154,6 +184,74 @@ typedef struct
     int first_idx;
 } msg_appendentries_response_t;
 
+/**
+ * A message containing the node's current membership configuration
+ * This is sent before a snapshot
+ *
+ */
+typedef struct
+{
+    /** currentTerm, to force other leader/candidate to step down */
+    int term;
+
+    int last_idx;
+
+    int last_term;
+
+    int n_entries;
+
+    /** array of entries within this message */
+    msg_entry_t* entries;
+} msg_membership_snapshot_t;
+
+// enum {
+//     RAFT_SNAPSHOTCHUNK_MEMBER,
+//     RAFT_SNAPSHOTCHUNK_DATA,
+//     RAFT_SNAPSHOTCHUNK_NUM,
+// };
+
+/**
+ * To send a complete snapshot we need to send many chunks.
+ *
+ */
+typedef struct
+{
+    /** currentTerm, to force other leader/candidate to step down */
+    int term;
+
+    int last_idx;
+
+    int last_term;
+
+    int offset;
+
+    // int chunk_type;
+
+    /* If set to 1 then this is the final chunk */
+    int done;
+
+    raft_entry_data_t data;
+} msg_snapshot_t;
+
+/**
+ *
+ */
+typedef struct
+{
+    /** currentTerm, to force other leader/candidate to step down */
+    int term;
+
+    int last_index;
+
+    int last_term;
+
+    int offset;
+
+    int done;
+
+    raft_entry_data_t data;
+} msg_snapshot_response_t;
+
 typedef void* raft_server_t;
 typedef void* raft_node_t;
 
@@ -185,6 +283,45 @@ typedef int (
     void *user_data,
     raft_node_t* node,
     msg_appendentries_t* msg
+    );
+
+/** 
+ * Log compaction
+ * Callback for sending Snapshots
+ *
+ * User needs to:
+ *  - set msg->done to 1 if this was the last piece of the snapshot sent.
+ *  - set msg->data with the snapshot chunk.
+ *
+ * @param[in] raft Raft server making this callback
+ * @param[in] user_data User data that is passed from Raft server
+ * @param[in] node Node's ID that we are sending this message to
+ * @param[in] msg Snapshot message to be sent
+ * @return number of bytes worth of snapshot sent */
+typedef int (
+*func_send_snapshot_f
+)   (
+    raft_server_t* raft,
+    void *user_data,
+    raft_node_t* node,
+    msg_snapshot_t* msg
+    );
+
+/** 
+ * Log compaction
+ *
+ * Leader sends a snapshot, and we save it to disk.
+ *
+ * @param[in] raft Raft server making this callback
+ * @param[in] offset Position to write to
+ * @param[in] data Snapshot data in bytes to write
+ * @return 0 on success */
+typedef int (
+*func_recv_snapshot_f
+)   (
+    raft_server_t* raft,
+    int offset,
+    raft_entry_data_t *data
     );
 
 /** Callback for detecting when non-voting nodes have obtained enough logs.
@@ -262,6 +399,16 @@ typedef int (
     int entry_idx
     );
 
+typedef int (
+*func_logentry_event_batch_f
+)   (
+    raft_server_t* raft,
+    void *user_data,
+    raft_entry_t *entry,
+    int entry_idx,
+    int count
+    );
+
 typedef struct
 {
     /** Callback for sending request vote messages */
@@ -269,6 +416,11 @@ typedef struct
 
     /** Callback for sending appendentries messages */
     func_send_appendentries_f send_appendentries;
+
+    /** Callback for sending snapshots */
+    func_send_snapshot_f send_snapshot;
+
+    func_recv_snapshot_f recv_snapshot;
 
     /** Callback for finite state machine application
      * Return 0 on success.
@@ -283,12 +435,23 @@ typedef struct
      * For safety reasons this callback MUST flush the change to disk. */
     func_persist_int_f persist_term;
 
+    /** Snapshot:
+     * TODO: rename snapshot to compacted?
+     */
+    func_persist_int_f persist_snapshot_last_idx;
+
+    /** Snapshot:
+     */
+    func_persist_int_f persist_snapshot_last_term;
+
     /** Callback for adding an entry to the log
      * For safety reasons this callback MUST flush the change to disk.
      * Return 0 on success.
      * Return RAFT_ERR_SHUTDOWN if you want the server to shutdown. */
     func_logentry_event_f log_offer;
 
+    func_logentry_event_batch_f log_offer_batch;
+  
     /** Callback for removing the oldest entry from the log
      * For safety reasons this callback MUST flush the change to disk.
      * @note If memory was malloc'd in log_offer then this should be the right
@@ -312,6 +475,7 @@ typedef struct
     /** Callback for catching debugging log messages
      * This callback is optional */
     func_log_f log;
+    func_log_f log_election;
 } raft_cbs_t;
 
 typedef struct
@@ -374,6 +538,7 @@ raft_node_t* raft_add_node(raft_server_t* me, void* user_data, int id, int is_se
  *  node if it was successfully added;
  *  NULL if the node already exists */
 raft_node_t* raft_add_non_voting_node(raft_server_t* me_, void* udata, int id, int is_self);
+// raft_node_t* raft_add_non_voting_node(raft_server_t* me_, int checkpoint_idx, void* udata, int id, int is_self);
 
 /** Remove node.
  * @param node The node to be removed. */
@@ -479,6 +644,11 @@ int raft_recv_requestvote_response(raft_server_t* me,
 int raft_recv_entry(raft_server_t* me,
                     msg_entry_t* ety,
                     msg_entry_response_t *r);
+
+int raft_recv_entry_batch(raft_server_t* me,
+			  msg_entry_t* ety,
+			  msg_entry_response_t *r,
+			  int count);
 
 /**
  * @return server's node ID; -1 if it doesn't know what it is */
@@ -622,6 +792,10 @@ void raft_set_commit_idx(raft_server_t* me, int commit_idx);
  *  RAFT_ERR_SHUTDOWN server should shutdown */
 int raft_append_entry(raft_server_t* me, raft_entry_t* ety);
 
+/* batch version */
+int raft_append_entry_batch(raft_server_t* me, raft_entry_t* ety, int count);
+
+
 /** Confirm if a msg_entry_response has been committed.
  * @param[in] r The response we want to check */
 int raft_msg_entry_response_committed(raft_server_t* me_,
@@ -668,5 +842,64 @@ int raft_entry_is_voting_cfg_change(raft_entry_t* ety);
  * @param[in] ety The entry to query.
  * @return 1 if this is a configuration change. */
 int raft_entry_is_cfg_change(raft_entry_t* ety);
+
+/** Begin snapshotting.
+ * TODO rename snapshot to compaction?
+ * The user will have to use raft_pop_log to compact the log.
+ *
+ * While snapshotting, raft will:
+ *  - not apply log entries
+ *  - not start elections
+ *
+ * @return 0 on success
+ *
+ **/
+int raft_begin_snapshot(raft_server_t *me_);
+
+/** Stop snapshotting.
+ *
+ * The user MUST include membership changes inside the snapshot. This means
+ * that membership changes are included in the size of the snapshot. The user
+ * needs to deserialize the snapshot to obtain the membership changes.
+ *
+ * THe user MUST compact the log up to the commit index. This means all
+ * log entries up to the commit index must be deleted (aka polled).
+ *
+ *
+ * @param[in] size Size of snapshot taken in bytes.
+ * @return 0 on success
+ *
+ **/
+int raft_end_snapshot(raft_server_t *me_, int size);
+
+/** Get the entry index of the entry that was snapshotted */
+int raft_get_snapshot_entry_idx(raft_server_t *me_);
+
+int raft_snapshot_is_in_progress(raft_server_t *me_);
+
+// TODO rename to entry
+void raft_pop_log(raft_server_t* me_, raft_entry_t* ety, const int idx);
+
+// void raft_poll_entry(raft_server_t* me_, raft_entry_t* ety, const int idx);
+
+void raft_poll_entry(raft_server_t* me_, const int idx);
+
+int raft_get_first_entry_idx(raft_server_t* me_);
+
+/** Load raft state from snapshot
+ * @param[in] term The starting term
+ * @param[in] idx The starting log index
+ * @param[in] etys Entries to start with
+ * @param[in] count Number of entries to start with
+ * @param[in] master Current leader */
+void raft_load_snapshot(raft_server_t *me_,
+			int term,
+			int idx,
+			raft_entry_t *ety,
+                        int count,
+			int master);
+
+/* Get last applied entry */
+raft_entry_t *raft_get_last_applied_entry(raft_server_t *me_);
 
 #endif /* RAFT_H_ */

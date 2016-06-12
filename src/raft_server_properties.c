@@ -222,3 +222,16 @@ int raft_is_connected(raft_server_t* me_)
 {
     return ((raft_server_private_t*)me_)->connected;
 }
+
+int raft_snapshot_is_in_progress(raft_server_t *me_)
+{
+    return ((raft_server_private_t*)me_)->snapshot_in_progress;
+}
+
+raft_entry_t *raft_get_last_applied_entry(raft_server_t *me_)
+{
+    raft_server_private_t* me = (raft_server_private_t*)me_;
+    if (raft_get_last_applied_idx(me_) == 0)
+        return NULL;
+    return log_get_at_idx(me->log, raft_get_last_applied_idx(me_));
+}

@@ -11,12 +11,21 @@ void log_free(log_t* me_);
 
 void log_clear(log_t* me_);
 
+void log_load_from_snapshot(log_t *me_, int idx, raft_entry_t *entry);
+
 /**
  * Add entry to log.
  * Don't add entry if we've already added this entry (based off ID)
  * Don't add entries with ID=0 
  * @return 0 if unsucessful; 1 otherwise */
 int log_append_entry(log_t* me_, raft_entry_t* c);
+
+/* And the batch version */
+int log_append_batch(log_t* me_, raft_entry_t* c, int count);
+
+/**
+ * Inject log */
+int log_offer_first(log_t * me_, raft_entry_t* ety);
 
 /**
  * @return number of entries held within log */
@@ -35,6 +44,10 @@ void log_empty(log_t * me_);
  * @return oldest entry */
 void *log_poll(log_t * me_);
 
+/**
+ * Get an array of entries from this index onwards
+ * This is used for batching
+ */
 raft_entry_t* log_get_from_idx(log_t* me_, int idx, int *n_etys);
 
 raft_entry_t* log_get_at_idx(log_t* me_, int idx);

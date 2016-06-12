@@ -10,7 +10,7 @@ See `raft.h <https://github.com/willemt/raft/blob/master/include/raft.h>`_ for f
 
 See `ticketd <https://github.com/willemt/ticketd>`_ for real life use of this library.
 
-Networking is out of scope for this project. The implementor will need to do all the plumbing.
+Networking is out of scope for this project. The implementor will need to do all the plumbing. The library doesn't assume a network layer with ordering or duplicate detection. This means you could use UDP for transmission.
 
 There are no dependencies, however https://github.com/willemt/linked-List-queue is required for testing.
 
@@ -428,7 +428,16 @@ It's highly recommended that when a node is added to the cluster that its node I
 
 3. Once the ``RAFT_LOGTYPE_REMOVE_NODE`` configuration change log is applied in the ``applylog`` callback we shutdown the server if it is to be removed.
 
-Todo
-====
+Log Compaction
+--------------
+Snapshotting is supported.
 
-- Log compaction
+The implementor has to serialize and deserialize the snapshot.
+
+The begin snapshotting call ``raft_begin_snapshot``.
+
+.. code-block:: c
+
+    raft_begin_snapshot()
+
+

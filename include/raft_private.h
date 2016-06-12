@@ -1,3 +1,12 @@
+/**
+ * Copyright (c) 2013, Willem-Hendrik Thiart
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file. 
+ *
+ * @file
+ * @author Willem Thiart himself@willemthiart.com
+ */
+
 #ifndef RAFT_PRIVATE_H_
 #define RAFT_PRIVATE_H_
 
@@ -7,15 +16,6 @@ enum {
     RAFT_NODE_STATUS_CONNECTING,
     RAFT_NODE_STATUS_DISCONNECTING
 };
-
-/**
- * Copyright (c) 2013, Willem-Hendrik Thiart
- * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file. 
- *
- * @file
- * @author Willem Thiart himself@willemthiart.com
- */
 
 typedef struct {
     /* Persistent state: */
@@ -44,7 +44,7 @@ typedef struct {
 
     /* amount of time left till timeout */
     int timeout_elapsed;
-
+ 
     raft_node_t* nodes;
     int num_nodes;
 
@@ -57,6 +57,7 @@ typedef struct {
 
     /* callbacks */
     raft_cbs_t cb;
+    /* TODO: remove udata */
     void* udata;
 
     /* my node ID */
@@ -65,9 +66,28 @@ typedef struct {
     /* the log which has a voting cfg change, otherwise -1 */
     int voting_cfg_change_log_idx;
 
-    /* our membership with the cluster is confirmed (ie. configuration log was
+    /* Our membership with the cluster is confirmed (ie. configuration log was
      * committed) */
     int connected;
+
+    /* Snapshot is in progress */
+    // TODO: rename to compaction_in_progress? probably not because this halts
+    // applying entries which might be semantically different from log cleaning
+    volatile int snapshot_in_progress;
+
+    /* Size of snapshot file in bytes
+     * Used for determining how many snapshot messages need to be sent */
+    int snapshot_size;
+
+    /* amount of time since last compaction */
+    int last_snapshot;
+
+    /* Last compacted idx */
+    int snapshot_last_idx;
+    int snapshot_last_term;
+
+    /* Next compaction idx */
+    // int next_compaction_idx;
 } raft_server_private_t;
 
 void raft_election_start(raft_server_t* me);
@@ -79,6 +99,8 @@ void raft_become_follower(raft_server_t* me);
 void raft_vote(raft_server_t* me, raft_node_t* node);
 
 void raft_set_current_term(raft_server_t* me,int term);
+
+int raft_snapshot_is_in_progress(raft_server_t * me_);
 
 /**
  * @return 0 on error */
@@ -122,8 +144,6 @@ void raft_node_set_has_sufficient_logs(raft_node_t* me_);
 int raft_node_has_sufficient_logs(raft_node_t* me_);
 
 int raft_votes_is_majority(const int nnodes, const int nvotes);
-
-void raft_pop_log(raft_server_t* me_, raft_entry_t* ety, const int idx);
 
 void raft_offer_log(raft_server_t* me_, raft_entry_t* ety, const int idx);
 
