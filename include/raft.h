@@ -559,7 +559,7 @@ void raft_set_request_timeout(raft_server_t* me, int msec);
  * @return
  *  0 on success;
  *  -1 on failure;
- *  RAFT_ERR_SHUTDOWN when server should be shutdown */
+ *  RAFT_ERR_SHUTDOWN when server should shutdown */
 int raft_periodic(raft_server_t* me, int msec_elapsed);
 
 /** Receive an appendentries message.
@@ -607,7 +607,7 @@ int raft_recv_requestvote(raft_server_t* me,
  * @param[in] r The requestvote response message
  * @return
  *  0 on success;
- *  RAFT_ERR_SHUTDOWN server should be shutdown; */
+ *  RAFT_ERR_SHUTDOWN server MUST shutdown; */
 int raft_recv_requestvote_response(raft_server_t* me,
                                    raft_node_t* node,
                                    msg_requestvote_response_t* r);
@@ -638,7 +638,7 @@ int raft_recv_requestvote_response(raft_server_t* me,
  * @return
  *  0 on success;
  *  RAFT_ERR_NOT_LEADER server is not the leader;
- *  RAFT_ERR_SHUTDOWN server should be shutdown;
+ *  RAFT_ERR_SHUTDOWN server MUST shutdown;
  *  RAFT_ERR_ONE_VOTING_CHANGE_ONLY there is a non-voting change inflight;
  */
 int raft_recv_entry(raft_server_t* me,
@@ -825,7 +825,7 @@ int raft_node_is_voting(raft_node_t* me_);
 /** Apply all entries up to the commit index
  * @return
  *  0 on success;
- *  RAFT_ERR_SHUTDOWN when server should be shutdown */
+ *  RAFT_ERR_SHUTDOWN when server MUST shutdown */
 int raft_apply_all(raft_server_t* me_);
 
 /** Become leader
